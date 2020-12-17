@@ -130,6 +130,10 @@ c10::IValue Function::operator()(Stack& stack) const {
   return stack.front();
 }
 
+const std::shared_ptr<Code> Function::get_code() const {
+  return code_;
+}
+
 } // namespace mobile
 } // namespace jit
 } // namespace torch
