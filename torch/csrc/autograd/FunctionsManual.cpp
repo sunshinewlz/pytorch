@@ -13,6 +13,7 @@
 #include <ATen/Dispatch.h>
 #include <ATen/ScalarOps.h>
 #include <ATen/SparseTensorUtils.h>
+#include <ATen/native/IndexingUtils.h>
 
 #include <ciso646>
 #include <algorithm>
@@ -630,11 +631,11 @@ Tensor _sparse_addmm_sparse_backward(const Tensor& grad, const Tensor& sparse_, 
 }
 
 // This function return a new SparseTensor with values from Tensor `input` filtered by indices of `mask`
-// and values are ignored. `input` and `mask` are sparse matrices, a sparse tensor with sparse_dim=2 and  dense_dim=2,  
+// and values are ignored. `input` and `mask` are sparse matrices, a sparse tensor with sparse_dim=2 and  dense_dim=2,
 // and they must have the same shape.
-// Note that the `output` must have the same `indices` as the `mask` so we are using just a clone. 
+// Note that the `output` must have the same `indices` as the `mask` so we are using just a clone.
 // However, to get `values` we have to use specific helper function for CPU/CUDA and use the `mask` data to filter `values`
-// That's why we created this `_sparse_matrix_mask_helper` function. 
+// That's why we created this `_sparse_matrix_mask_helper` function.
 Tensor _sparse_matrix_mask(const Tensor& input, const Tensor& mask){
   Tensor output = at::native::empty_like(mask);
   Tensor mask_indices = mask._indices().clone();
@@ -654,30 +655,30 @@ Tensor sparse_sparse_matmul_backward(
     const Tensor& b,
     int64_t grad_order) {
   /*
-  To implement the backward algorithm for sparse matrix-matrix matmul (SPMM) we can start from the following definition 
+  To implement the backward algorithm for sparse matrix-matrix matmul (SPMM) we can start from the following definition
   for dense tensors:
-  
-  c = a @ b 
-      then 
+
+  c = a @ b
+      then
   a_grad = c_grad @ b^T
   b_grad = a^T @ c_grad
 
   So for sparse matrices we can use the following definition:
-  
+
   if grad_order == 0:
-      a_grad = sparse_matrix_mask(c_grad @ b^T, mask=a) 
+      a_grad = sparse_matrix_mask(c_grad @ b^T, mask=a)
   else:
-      b_grad = sparse_matrix_mask(a^T @ c_grad, mask=b) 
+      b_grad = sparse_matrix_mask(a^T @ c_grad, mask=b)
   */
   TORCH_CHECK(
       grad_order == 0 || grad_order == 1,
       ": grad_order not in [0, 1] at sparse_sparse_matmul_backward function");
   if (grad_order == 0) {
     auto a_grad = _sparse_sparse_matmul(grad, b.t());
-    return _sparse_matrix_mask(a_grad.coalesce(), a.coalesce()); 
-  } 
+    return _sparse_matrix_mask(a_grad.coalesce(), a.coalesce());
+  }
   auto b_grad = _sparse_sparse_matmul(a.t(), grad);
-  return _sparse_matrix_mask(b_grad.coalesce(), b.coalesce()); 
+  return _sparse_matrix_mask(b_grad.coalesce(), b.coalesce());
 }
 
 Tensor renorm_backward(const Tensor & grad, const Tensor & self, Scalar p, int64_t dim, Scalar maxnorm) {
@@ -2197,15 +2198,17 @@ Tensor det_backward(const Tensor & grad, const Tensor& self, const Tensor& det) 
       return nonsingular_case_backward(grad, self, det);
     }
   } else {
-    auto nonzero_det_indices = at::where(det);
+    auto nonzero_det_indices = at::native::toListOfOptionalTensors(at::where(det));
+    c10::optional<Tensor> first_nonzero_det_index = nonzero_det_indices[0];
 
-    if (nonzero_det_indices[0].size(0) == det.numel()) {  // all determinants are nonzero (non-singular)
+    if (first_nonzero_det_index->size(0) == det.numel()) {  // all determinants are nonzero (non-singular)
       return nonsingular_case_backward(grad, self, det);
     }
 
-    auto zero_det_indices = at::where(det == 0);
+    auto zero_det_indices = at::native::toListOfOptionalTensors(at::where(det == 0));
+    c10::optional<Tensor> first_zero_det_index = zero_det_indices[0];
 
-    if (zero_det_indices[0].size(0) == det.numel()) {  // all determinants are zero (singular)
+    if (first_zero_det_index->size(0) == det.numel()) {  // all determinants are zero (singular)
       return singular_case_backward(grad, self, det);
     }
 
@@ -2247,15 +2250,17 @@ Tensor logdet_backward(const Tensor & grad, const Tensor& self, const Tensor& lo
       return singular_case_backward(grad, self);
     }
   } else {
-    auto finite_logdet_indices = at::where(logdet != -INFINITY);
+    auto finite_logdet_indices = at::native::toListOfOptionalTensors(at::where(logdet != -INFINITY));
+    c10::optional<Tensor> first_finite_logdet_index = finite_logdet_indices[0];
 
-    if (finite_logdet_indices[0].size(0) == logdet.numel()) {  // all log determinants are finite (non-singular)
+    if (first_finite_logdet_index->size(0) == logdet.numel()) {  // all log determinants are finite (non-singular)
       return nonsingular_case_backward(grad, self);
     }
 
-    auto neginf_logdet_indices = at::where(logdet == -INFINITY);
+    auto neginf_logdet_indices = at::native::toListOfOptionalTensors(at::where(logdet == -INFINITY));
+    c10::optional<Tensor> first_neginf_logdet_index = neginf_logdet_indices[0];
 
-    if (neginf_logdet_indices[0].size(0) == logdet.numel()) {  // all log determinants are -inf (singular)
+    if (first_neginf_logdet_index->size(0) == logdet.numel()) {  // all log determinants are -inf (singular)
       return singular_case_backward(grad, self);
     }
 
@@ -2299,15 +2304,17 @@ Tensor slogdet_backward(const Tensor& grad_logabsdet,
       return nonsingular_case_backward(grad_logabsdet, self);
     }
   } else {
-    auto nonzero_signdet_indices = at::where(signdet);
+    auto nonzero_signdet_indices = at::native::toListOfOptionalTensors(at::where(signdet));
+    c10::optional<Tensor> first_nonzero_signdet_index = nonzero_signdet_indices[0];
 
-    if (nonzero_signdet_indices[0].size(0) == logabsdet.numel()) {  // all log determinants are finite (non-singular)
+    if (first_nonzero_signdet_index->size(0) == logabsdet.numel()) {  // all log determinants are finite (non-singular)
       return nonsingular_case_backward(grad_logabsdet, self);
     }
 
-    auto zero_signdet_indices = at::where(signdet == 0);
+    auto zero_signdet_indices = at::native::toListOfOptionalTensors(at::where(signdet == 0));
+    c10::optional<Tensor> first_zero_signdet_index = zero_signdet_indices[0];
 
-    if (zero_signdet_indices[0].size(0) == logabsdet.numel()) {  // all log determinants are -inf (singular)
+    if (first_zero_signdet_index->size(0) == logabsdet.numel()) {  // all log determinants are -inf (singular)
       return singular_case_backward(grad_logabsdet, self);
     }
 
@@ -2845,7 +2852,7 @@ Tensor constant_pad_nd_backward(const Tensor& grad, IntArrayRef pad) {
 }
 
 Tensor embedding_dense_double_backward(const Tensor & grad, const Tensor & indices, int64_t padding_idx) {
-  // since first backward takes care of scaling by frequency, 
+  // since first backward takes care of scaling by frequency,
   // we don't need to worry about it here.
   auto gg_weight = grad.index_select(0, indices.reshape(-1));
 
@@ -2859,8 +2866,8 @@ Tensor embedding_dense_double_backward(const Tensor & grad, const Tensor & indic
   return gg_weight.view(size);
 }
 
-Tensor index_backward(Tensor zeros_like_self, TensorList indices, const Tensor& grad) {
-   return at::_index_put_impl_(zeros_like_self, indices, grad, true, true);
+Tensor index_backward(Tensor zeros_like_self, const torch::List<c10::optional<Tensor>>& indices, const Tensor& grad) {
+  return at::_index_put_impl_(zeros_like_self, indices, grad, true, true);
 }
 
 Tensor _cudnn_ctc_loss_backward(const Tensor& grad_out, const Tensor& loss, const Tensor& raw_grad, bool zero_infinity) {
